@@ -7,8 +7,10 @@ typedef struct {
   SnWatcher *skeleton;
   guint bus_owner_id;
   GHashTable *hosts;
+  GHashTable *hosts_owners;
   GHashTable *items;
 } StatusNotifierWatcher;
+
 
 static StatusNotifierWatcher status_notifier_watcher;
 
@@ -20,12 +22,15 @@ static const gchar *const *array_from_hash_set(GHashTable *hash_table);
 
 static gboolean on_register_host(SnWatcher *object,
                                  GDBusMethodInvocation *invocation,
-                                 char *service,
+                                 gchar *service,
                                  gpointer user_data)
 {
-  g_print("Registering StatusNotifierHost as %s\n", service);
-  if (!g_hash_table_contains(status_notifier_watcher.hosts, service)) {
+  const gchar* sender = g_dbus_method_invocation_get_sender(invocation);
+  g_print("Registering StatusNotifierHost as %s, invoked by %s\n", service, sender);
+  if (!g_hash_table_contains(status_notifier_watcher.hosts, service) && !g_hash_table_contains(status_notifier_watcher.hosts_owners, sender)) {
+    g_print("Adding StatusNotifierHost %s\n", service);
     g_hash_table_add(status_notifier_watcher.hosts, g_strdup(service));
+    g_hash_table_insert(status_notifier_watcher.hosts_owners, g_strdup(sender), g_strdup(service));
   }
   sn_watcher_complete_register_host(object, invocation);
   sn_watcher_set_is_host_registered(object, TRUE);
@@ -86,9 +91,11 @@ static void on_name_owner_changed(GDBusConnection *connection,
     sn_watcher_emit_item_unregistered(status_notifier_watcher.skeleton, name);
   }
 
-  if (g_hash_table_contains(status_notifier_watcher.hosts, name) && new_owner[0] == '\0') {
-    g_print("Removing StatusNotifierHost %s\n", name);
-    g_hash_table_remove(status_notifier_watcher.hosts, name);
+  if (g_hash_table_contains(status_notifier_watcher.hosts_owners, old_owner) && new_owner[0] == '\0') {
+    const gchar *service_name = g_hash_table_lookup(status_notifier_watcher.hosts_owners, old_owner);
+    g_print("Removing StatusNotifierHost %s\n", service_name);
+    g_hash_table_remove(status_notifier_watcher.hosts, service_name);
+    g_hash_table_remove(status_notifier_watcher.hosts_owners, old_owner);
     if (g_hash_table_size(status_notifier_watcher.hosts) == 0) {
       sn_watcher_set_is_host_registered(status_notifier_watcher.skeleton, FALSE);
     }
@@ -160,6 +167,7 @@ static gboolean setup_dbus(gpointer data) {
                      NULL,
                      NULL),
     .hosts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL),
+    .hosts_owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free),
     .items = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL),
   };
 
